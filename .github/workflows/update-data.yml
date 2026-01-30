@@ -19,7 +19,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p data data/i18n
 
           #####################################
@@ -29,8 +28,7 @@ jobs:
             data/items.meta.json \
             data/items.i18n.json \
             data/items.i18n.meta.json \
-            data/i18n.upstream.meta.json \
-            data/markets.meta.json
+            data/i18n.upstream.meta.json
 
           #####################################
           # 1) ITEM IDS (items.json ONLY)
@@ -43,7 +41,6 @@ jobs:
 
           src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.txt"
           path = "data/items.txt.new"
-
           raw = open(path, "rb").read()
           lines = raw.decode("utf-8", errors="replace").splitlines()
 
@@ -82,7 +79,6 @@ jobs:
 
           src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.json"
           path = "data/items.full.json.new"
-
           raw = open(path, "rb").read()
           arr = json.loads(raw.decode("utf-8", errors="replace"))
 
@@ -118,68 +114,38 @@ jobs:
           rm -f data/items.full.json.new
 
           #####################################
-          # 3) MARKETS (markets.json ONLY)  ✅ API uses city names (no " Market" suffix)
+          # 3) MARKETS (markets.json)
+          # NOTE: AO Data "city" values are these (no "Market" suffix).
           #####################################
-          SRC_WORLD_TXT="https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/world.txt"
-          curl -fsSL "$SRC_WORLD_TXT" -o data/world.txt.new
-
           python3 - <<'PY'
           import json, datetime
 
-          src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/world.txt"
-          path = "data/world.txt.new"
-
-          raw = open(path, "rb").read()
-          lines = raw.decode("utf-8", errors="replace").splitlines()
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-          # world.txt içinde şehir/market isimleri geçiyor; biz API için normalize ediyoruz:
-          # - "<City> Market" => "<City>"
-          # - "Black Market" aynen kalır
-          keep = []
-          seen = set()
-
-          def add(x: str):
-              x = x.strip()
-              if not x or x in seen:
-                  return
-              seen.add(x)
-              keep.append(x)
-
-          for line in lines:
-              s = line.strip()
-              if not s:
-                  continue
-
-              # Çok agresif parse etmeyelim: yalnızca açıkça isim gibi duran satırları al
-              # (sende çalışan mevcut mantığa uyumlu olacak şekilde)
-              candidates = [s]
-
-              for c in candidates:
-                  if c.endswith(" Market") and c != "Black Market":
-                      add(c[:-7])  # " Market" = 7 char
-                  elif c == "Black Market":
-                      add("Black Market")
-                  else:
-                      # şehir isimleri de olabilir (Brecilien, Thetford vs)
-                      add(c)
-
-          # Son filtre: API lokasyonları olarak kullandıklarımızı tut
-          allowed = {
-              "Bridgewatch","Fort Sterling","Lymhurst","Martlock","Thetford","Caerleon","Brecilien","Black Market"
-          }
-          markets = [x for x in keep if x in allowed]
+          markets = [
+              "Black Market",
+              "Brecilien",
+              "Bridgewatch",
+              "Caerleon",
+              "Fort Sterling",
+              "Lymhurst",
+              "Martlock",
+              "Thetford",
+          ]
 
           with open("data/markets.json", "w", encoding="utf-8") as f:
               json.dump(
-                  {"generatedAt": now, "source": src_url, "count": len(markets), "markets": markets},
+                  {
+                      "generatedAt": now,
+                      "source": "static-list (AO Data city names)",
+                      "count": len(markets),
+                      "markets": markets
+                  },
                   f,
                   ensure_ascii=False,
                   separators=(",", ":"),
               )
           PY
-
-          rm -f data/world.txt.new
 
           #####################################
           # 4) MANIFEST (single source of truth)
@@ -229,7 +195,7 @@ jobs:
       - name: Commit & push
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A data
           git commit -m "chore: daily data update"
           git push
