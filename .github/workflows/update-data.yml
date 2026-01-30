@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build items + i18n split + markets + manifest (manifest-only)
+      - name: Build items + i18n split + markets + categories + manifest (manifest-only)
         shell: bash
         run: |
           set -euo pipefail
@@ -28,7 +28,9 @@ jobs:
             data/items.meta.json \
             data/items.i18n.json \
             data/items.i18n.meta.json \
-            data/i18n.upstream.meta.json
+            data/i18n.upstream.meta.json \
+            data/markets.meta.json \
+            data/categories.v1.json
 
           #####################################
           # 1) ITEM IDS (items.json ONLY)
@@ -43,7 +45,6 @@ jobs:
           path = "data/items.txt.new"
           raw = open(path, "rb").read()
           lines = raw.decode("utf-8", errors="replace").splitlines()
-
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
           item_ids = []
@@ -81,7 +82,6 @@ jobs:
           path = "data/items.full.json.new"
           raw = open(path, "rb").read()
           arr = json.loads(raw.decode("utf-8", errors="replace"))
-
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
           langs = [
@@ -115,13 +115,11 @@ jobs:
 
           #####################################
           # 3) MARKETS (markets.json)
-          # NOTE: AO Data "city" values are these (no "Market" suffix).
           #####################################
           python3 - <<'PY'
           import json, datetime
 
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
           markets = [
               "Black Market",
               "Brecilien",
@@ -135,11 +133,93 @@ jobs:
 
           with open("data/markets.json", "w", encoding="utf-8") as f:
               json.dump(
+                  {"generatedAt": now, "source": "static-list (AO Data city names)", "count": len(markets), "markets": markets},
+                  f,
+                  ensure_ascii=False,
+                  separators=(",", ":"),
+              )
+          PY
+
+          #####################################
+          # 4) CATEGORIES (categories.json) - derived from itemId
+          #####################################
+          python3 - <<'PY'
+          import json, datetime, re
+
+          items_doc = json.loads(open("data/items.json", "r", encoding="utf-8").read())
+          item_ids = items_doc["items"]
+
+          now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+          def classify(uid: str):
+              u = uid.split("@", 1)[0]  # remove enchant for classification
+              cats = []
+
+              # High-level buckets
+              if "_MOUNT_" in u or u.endswith("_MOUNT") or u.startswith("SKIN_MOUNT_"):
+                  cats += ["mount"]
+              elif u.startswith("T") and "_FARM_" in u:
+                  cats += ["farming"]
+              elif u.startswith("T") and ("_FISH_" in u or "_FISHING" in u):
+                  cats += ["fishing"]
+              elif u.startswith("T") and any(x in u for x in ["_POTION", "_ELIXIR"]):
+                  cats += ["consumable","potion"]
+              elif u.startswith("T") and any(x in u for x in ["_MEAL", "_FOOD", "_SOUP", "_OMELETTE", "_SANDWICH", "_STEW"]):
+                  cats += ["consumable","food"]
+              elif u.startswith("T") and any(x in u for x in ["_BAG", "_CAPE", "_CLOAK"]):
+                  cats += ["equipment","utility"]
+                  if "_BAG" in u: cats += ["bag"]
+                  if "_CAPE" in u or "_CLOAK" in u: cats += ["cape"]
+              elif u.startswith("T") and any(x in u for x in ["_OFFHAND", "_SHIELD", "_TORCH", "_BOOK", "_HORN"]):
+                  cats += ["equipment","offhand"]
+              elif u.startswith("T") and any(x in u for x in ["_HEAD", "_HELM", "_HOOD", "_HAT"]):
+                  cats += ["equipment","armor","head"]
+              elif u.startswith("T") and any(x in u for x in ["_ARMOR", "_CHEST", "_ROBE", "_JACKET"]):
+                  cats += ["equipment","armor","chest"]
+              elif u.startswith("T") and any(x in u for x in ["_SHOES", "_BOOTS", "_SANDALS"]):
+                  cats += ["equipment","armor","shoes"]
+              elif u.startswith("T") and any(x in u for x in ["_MAIN_", "_2H_", "_1H_"]):
+                  cats += ["equipment","weapon"]
+                  # Weapon subtypes (best-effort)
+                  if "SWORD" in u: cats += ["sword"]
+                  elif "AXE" in u: cats += ["axe"]
+                  elif "MACE" in u: cats += ["mace"]
+                  elif "HAMMER" in u: cats += ["hammer"]
+                  elif "SPEAR" in u: cats += ["spear"]
+                  elif "BOW" in u: cats += ["bow"]
+                  elif "CROSSBOW" in u: cats += ["crossbow"]
+                  elif "STAFF" in u: cats += ["staff"]
+                  elif "DAGGER" in u: cats += ["dagger"]
+                  elif "QUARTERSTAFF" in u: cats += ["quarterstaff"]
+              else:
+                  # Resources / materials (best-effort)
+                  if any(x in u for x in ["_ORE","_WOOD","_FIBER","_HIDE","_ROCK","_STONE"]):
+                      cats += ["resource","raw"]
+                  elif any(x in u for x in ["_BAR","_PLANKS","_CLOTH","_LEATHER","_BLOCK","_STONEBLOCK"]):
+                      cats += ["resource","refined"]
+                  elif "ARTEFACT" in u or "ARTIFACT" in u:
+                      cats += ["resource","artifact"]
+                  else:
+                      cats += ["other"]
+
+              # Dedup + stable order
+              seen = set()
+              out = []
+              for c in cats:
+                  if c not in seen:
+                      seen.add(c)
+                      out.append(c)
+              return out
+
+          mapping = { uid: {"cat": classify(uid)} for uid in item_ids }
+
+          with open("data/categories.json", "w", encoding="utf-8") as f:
+              json.dump(
                   {
                       "generatedAt": now,
-                      "source": "static-list (AO Data city names)",
-                      "count": len(markets),
-                      "markets": markets
+                      "source": "derived-from-itemId",
+                      "count": len(mapping),
+                      "items": mapping
                   },
                   f,
                   ensure_ascii=False,
@@ -148,7 +228,7 @@ jobs:
           PY
 
           #####################################
-          # 4) MANIFEST (single source of truth)
+          # 5) MANIFEST (single source of truth)
           #####################################
           python3 - <<'PY'
           import os, json, hashlib, datetime
@@ -164,7 +244,6 @@ jobs:
               return {"url": "/" + p.replace("\\", "/"), "bytes": os.path.getsize(p), "sha256": sha256_file(p)}
 
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
           langs = [
               "EN-US","DE-DE","FR-FR","RU-RU","PL-PL","ES-ES","PT-BR","IT-IT",
               "ZH-CN","KO-KR","JA-JP","ZH-TW","ID-ID","TR-TR","AR-SA"
@@ -176,6 +255,7 @@ jobs:
               "files": {
                   "items": file_entry("data/items.json"),
                   "markets": file_entry("data/markets.json"),
+                  "categories": file_entry("data/categories.json"),
                   "i18n": { lang: file_entry(f"data/i18n/{lang}.json") for lang in langs }
               }
           }
