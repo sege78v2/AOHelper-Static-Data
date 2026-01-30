@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build items + i18n split + manifest
+      - name: Build items + i18n split + manifest (manifest-only)
         shell: bash
         run: |
           set -euo pipefail
@@ -25,16 +25,20 @@ jobs:
           #####################################
           # 0) CLEAN LEGACY (no manual delete)
           #####################################
-          rm -f data/items.i18n.json data/items.i18n.meta.json
+          rm -f \
+            data/items.meta.json \
+            data/items.i18n.json \
+            data/items.i18n.meta.json \
+            data/i18n.upstream.meta.json
 
           #####################################
-          # 1) ITEM IDS (items.json + meta)
+          # 1) ITEM IDS (items.json ONLY)
           #####################################
           SRC_ITEMS_TXT="https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.txt"
           curl -fsSL "$SRC_ITEMS_TXT" -o data/items.txt.new
 
           python3 - <<'PY'
-          import hashlib, json, datetime
+          import json, datetime
 
           src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.txt"
           path = "data/items.txt.new"
@@ -43,7 +47,6 @@ jobs:
           lines = raw.decode("utf-8", errors="replace").splitlines()
 
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-          sha256 = hashlib.sha256(raw).hexdigest()
 
           item_ids = []
           for line in lines:
@@ -51,7 +54,6 @@ jobs:
               if not line:
                   continue
               parts = line.split()
-              # Expected: "1234: T4_BAG ..."
               if len(parts) >= 2 and parts[0].endswith(":") and parts[0][:-1].isdigit():
                   item_ids.append(parts[1])
               else:
@@ -64,26 +66,18 @@ jobs:
                   ensure_ascii=False,
                   separators=(",", ":"),
               )
-
-          with open("data/items.meta.json", "w", encoding="utf-8") as f:
-              json.dump(
-                  {"generatedAt": now, "source": src_url, "sha256": sha256, "bytes": len(raw)},
-                  f,
-                  ensure_ascii=False,
-                  separators=(",", ":"),
-              )
           PY
 
           rm -f data/items.txt.new
 
           #####################################
-          # 2) I18N SPLIT (15 languages, NO master files)
+          # 2) I18N SPLIT (15 languages)
           #####################################
           SRC_ITEMS_FULL_JSON="https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.json"
           curl -fsSL "$SRC_ITEMS_FULL_JSON" -o data/items.full.json.new
 
           python3 - <<'PY'
-          import json, hashlib, datetime, os
+          import json, datetime, os
 
           src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.json"
           path = "data/items.full.json.new"
@@ -92,7 +86,6 @@ jobs:
           arr = json.loads(raw.decode("utf-8", errors="replace"))
 
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-          upstream_sha256 = hashlib.sha256(raw).hexdigest()
 
           langs = [
               "EN-US","DE-DE","FR-FR","RU-RU","PL-PL","ES-ES","PT-BR","IT-IT",
@@ -101,7 +94,6 @@ jobs:
 
           os.makedirs("data/i18n", exist_ok=True)
 
-          # Build per-lang files
           for lang in langs:
               out = {}
               for it in arr:
@@ -120,15 +112,6 @@ jobs:
               b = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
               with open(f"data/i18n/{lang}.json", "wb") as f:
                   f.write(b)
-
-          # Optional: write one small upstream meta for i18n source (kept minimal)
-          with open("data/i18n.upstream.meta.json", "w", encoding="utf-8") as f:
-              json.dump(
-                  {"generatedAt": now, "source": src_url, "upstreamSha256": upstream_sha256, "upstreamBytes": len(raw)},
-                  f,
-                  ensure_ascii=False,
-                  separators=(",", ":"),
-              )
           PY
 
           rm -f data/items.full.json.new
@@ -161,8 +144,6 @@ jobs:
               "version": 1,
               "files": {
                   "items": file_entry("data/items.json"),
-                  "items_meta": file_entry("data/items.meta.json"),
-                  "i18n_upstream_meta": file_entry("data/i18n.upstream.meta.json"),
                   "i18n": { lang: file_entry(f"data/i18n/{lang}.json") for lang in langs }
               }
           }
