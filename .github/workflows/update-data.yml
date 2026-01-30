@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build items + i18n (master + split)
+      - name: Build items + i18n (master + split) + manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -149,6 +149,50 @@ jobs:
           PY
 
           rm -f data/items.full.json.new
+
+          #####################################
+          # 4) MANIFEST (single source of truth)
+          #####################################
+          python3 - <<'PY'
+          import os, json, hashlib, datetime
+
+          def sha256_file(p: str) -> str:
+              h = hashlib.sha256()
+              with open(p, "rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def file_entry(p: str) -> dict:
+              return {
+                  "url": "/" + p.replace("\\", "/"),
+                  "bytes": os.path.getsize(p),
+                  "sha256": sha256_file(p),
+              }
+
+          now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+          langs = [
+              "EN-US","DE-DE","FR-FR","RU-RU","PL-PL","ES-ES","PT-BR","IT-IT",
+              "ZH-CN","KO-KR","JA-JP","ZH-TW","ID-ID","TR-TR","AR-SA"
+          ]
+
+          manifest = {
+              "generatedAt": now,
+              "version": 1,
+              "files": {
+                  "items": file_entry("data/items.json"),
+                  "items_meta": file_entry("data/items.meta.json"),
+                  "items_i18n_master": file_entry("data/items.i18n.json"),
+                  "items_i18n_master_meta": file_entry("data/items.i18n.meta.json"),
+                  "i18n": { lang: file_entry(f"data/i18n/{lang}.json") for lang in langs }
+              }
+          }
+
+          os.makedirs("data", exist_ok=True)
+          with open("data/manifest.json", "w", encoding="utf-8") as f:
+              json.dump(manifest, f, ensure_ascii=False, separators=(",", ":"))
+          PY
 
           #####################################
           # Commit guard
