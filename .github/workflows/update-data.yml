@@ -29,7 +29,8 @@ jobs:
             data/items.meta.json \
             data/items.i18n.json \
             data/items.i18n.meta.json \
-            data/i18n.upstream.meta.json
+            data/i18n.upstream.meta.json \
+            data/markets.meta.json
 
           #####################################
           # 1) ITEM IDS (items.json ONLY)
@@ -117,45 +118,57 @@ jobs:
           rm -f data/items.full.json.new
 
           #####################################
-          # 3) MARKETS (markets.json)
+          # 3) MARKETS (markets.json ONLY)  ✅ API uses city names (no " Market" suffix)
           #####################################
           SRC_WORLD_TXT="https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/world.txt"
           curl -fsSL "$SRC_WORLD_TXT" -o data/world.txt.new
 
           python3 - <<'PY'
-          import re, json, datetime
+          import json, datetime
 
           src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/world.txt"
           path = "data/world.txt.new"
-          text = open(path, "r", encoding="utf-8", errors="replace").read().splitlines()
 
+          raw = open(path, "rb").read()
+          lines = raw.decode("utf-8", errors="replace").splitlines()
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-          # Baseline known markets (stable). We also try to auto-pick any line containing "Market".
-          known = {
-              "Bridgewatch","Martlock","Thetford","Fort Sterling","Lymhurst","Caerleon","Brecilien","Black Market"
+          # world.txt içinde şehir/market isimleri geçiyor; biz API için normalize ediyoruz:
+          # - "<City> Market" => "<City>"
+          # - "Black Market" aynen kalır
+          keep = []
+          seen = set()
+
+          def add(x: str):
+              x = x.strip()
+              if not x or x in seen:
+                  return
+              seen.add(x)
+              keep.append(x)
+
+          for line in lines:
+              s = line.strip()
+              if not s:
+                  continue
+
+              # Çok agresif parse etmeyelim: yalnızca açıkça isim gibi duran satırları al
+              # (sende çalışan mevcut mantığa uyumlu olacak şekilde)
+              candidates = [s]
+
+              for c in candidates:
+                  if c.endswith(" Market") and c != "Black Market":
+                      add(c[:-7])  # " Market" = 7 char
+                  elif c == "Black Market":
+                      add("Black Market")
+                  else:
+                      # şehir isimleri de olabilir (Brecilien, Thetford vs)
+                      add(c)
+
+          # Son filtre: API lokasyonları olarak kullandıklarımızı tut
+          allowed = {
+              "Bridgewatch","Fort Sterling","Lymhurst","Martlock","Thetford","Caerleon","Brecilien","Black Market"
           }
-
-          found = set()
-
-          for line in text:
-              line = line.strip()
-              if not line:
-                  continue
-              # Common dump format: "1234: Something With Spaces ..."
-              m = re.match(r"^\s*\d+:\s*(.+?)\s*$", line)
-              if not m:
-                  continue
-              name = m.group(1).strip()
-
-              # Keep known markets, and any future entries that explicitly contain "Market"
-              if name in known or "Market" in name:
-                  found.add(name)
-
-          # Ensure baseline always included
-          found |= known
-
-          markets = sorted(found)
+          markets = [x for x in keep if x in allowed]
 
           with open("data/markets.json", "w", encoding="utf-8") as f:
               json.dump(
@@ -216,7 +229,7 @@ jobs:
       - name: Commit & push
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A data
           git commit -m "chore: daily data update"
           git push
