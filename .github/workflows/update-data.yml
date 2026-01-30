@@ -1,0 +1,167 @@
+name: Update AOHelper static data daily
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "10 3 * * *" # daily 03:10 UTC (~06:10 TR)
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build items + i18n (master + split)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p data data/i18n
+
+          #####################################
+          # 1) ITEM IDS (items.json + meta)
+          #####################################
+          SRC_ITEMS_TXT="https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.txt"
+          curl -fsSL "$SRC_ITEMS_TXT" -o data/items.txt.new
+
+          python3 - <<'PY'
+          import hashlib, json, datetime
+
+          src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.txt"
+          path = "data/items.txt.new"
+          raw = open(path, "rb").read()
+          lines = raw.decode("utf-8", errors="replace").splitlines()
+
+          now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+          sha256 = hashlib.sha256(raw).hexdigest()
+
+          item_ids = []
+          for line in lines:
+              line = line.strip()
+              if not line:
+                  continue
+              parts = line.split()
+              if len(parts) >= 2 and parts[0].endswith(":") and parts[0][:-1].isdigit():
+                  item_ids.append(parts[1])
+              else:
+                  item_ids.append(parts[0])
+
+          with open("data/items.json", "w", encoding="utf-8") as f:
+              json.dump({"generatedAt": now, "source": src_url, "count": len(item_ids), "items": item_ids}, f, ensure_ascii=False)
+
+          with open("data/items.meta.json", "w", encoding="utf-8") as f:
+              json.dump({"generatedAt": now, "source": src_url, "sha256": sha256, "bytes": len(raw)}, f, ensure_ascii=False)
+          PY
+
+          rm -f data/items.txt.new
+
+          #####################################
+          # 2) I18N MASTER (items.i18n.json + meta)
+          #####################################
+          SRC_ITEMS_FULL_JSON="https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.json"
+          curl -fsSL "$SRC_ITEMS_FULL_JSON" -o data/items.full.json.new
+
+          python3 - <<'PY'
+          import json, hashlib, datetime
+
+          src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.json"
+          path = "data/items.full.json.new"
+          raw = open(path, "rb").read()
+          arr = json.loads(raw.decode("utf-8", errors="replace"))
+
+          now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+          upstream_sha256 = hashlib.sha256(raw).hexdigest()
+
+          out = {}
+          for it in arr:
+              uid = it.get("UniqueName")
+              if not uid:
+                  continue
+              names = it.get("LocalizedNames") or {}
+              descs = it.get("LocalizedDescriptions") or {}
+              if names or descs:
+                  out[uid] = {"name": names, "desc": descs}
+
+          master_bytes = json.dumps(
+              {"generatedAt": now, "source": src_url, "count": len(out), "items": out},
+              ensure_ascii=False,
+              separators=(",", ":")
+          ).encode("utf-8")
+
+          open("data/items.i18n.json", "wb").write(master_bytes)
+
+          open("data/items.i18n.meta.json", "w", encoding="utf-8").write(
+              json.dumps(
+                  {
+                      "generatedAt": now,
+                      "source": src_url,
+                      "upstreamSha256": upstream_sha256,
+                      "upstreamBytes": len(raw),
+                      "bytes": len(master_bytes),
+                      "sha256": hashlib.sha256(master_bytes).hexdigest()
+                  },
+                  ensure_ascii=False
+              )
+          )
+          PY
+
+          #####################################
+          # 3) I18N SPLIT (15 languages, no per-lang meta)
+          #####################################
+          python3 - <<'PY'
+          import json, os
+
+          master = json.loads(open("data/items.i18n.json", "rb").read().decode("utf-8", errors="replace"))
+          items = master["items"]
+          generatedAt = master["generatedAt"]
+          source = master["source"]
+
+          langs = [
+              "EN-US","DE-DE","FR-FR","RU-RU","PL-PL","ES-ES","PT-BR","IT-IT",
+              "ZH-CN","KO-KR","JA-JP","ZH-TW","ID-ID","TR-TR","AR-SA"
+          ]
+
+          os.makedirs("data/i18n", exist_ok=True)
+
+          for lang in langs:
+              out = {}
+              for uid, v in items.items():
+                  name = (v.get("name") or {}).get(lang)
+                  desc = (v.get("desc") or {}).get(lang)
+                  if name is None and desc is None:
+                      continue
+                  out[uid] = {"name": name, "desc": desc}
+
+              payload = {
+                  "generatedAt": generatedAt,
+                  "source": source,
+                  "lang": lang,
+                  "count": len(out),
+                  "items": out
+              }
+
+              b = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+              open(f"data/i18n/{lang}.json", "wb").write(b)
+          PY
+
+          rm -f data/items.full.json.new
+
+          #####################################
+          # Commit guard
+          #####################################
+          if git diff --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+
+      - name: Commit & push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          git commit -m "chore: daily data update"
+          git push
