@@ -144,18 +144,16 @@ jobs:
           # 4) CATEGORIES (categories.json) - derived from itemId
           #####################################
           python3 - <<'PY'
-          import json, datetime, re
+          import json, datetime
 
           items_doc = json.loads(open("data/items.json", "r", encoding="utf-8").read())
           item_ids = items_doc["items"]
-
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
           def classify(uid: str):
-              u = uid.split("@", 1)[0]  # remove enchant for classification
+              u = uid.split("@", 1)[0]
               cats = []
 
-              # High-level buckets
               if "_MOUNT_" in u or u.endswith("_MOUNT") or u.startswith("SKIN_MOUNT_"):
                   cats += ["mount"]
               elif u.startswith("T") and "_FARM_" in u:
@@ -180,7 +178,6 @@ jobs:
                   cats += ["equipment","armor","shoes"]
               elif u.startswith("T") and any(x in u for x in ["_MAIN_", "_2H_", "_1H_"]):
                   cats += ["equipment","weapon"]
-                  # Weapon subtypes (best-effort)
                   if "SWORD" in u: cats += ["sword"]
                   elif "AXE" in u: cats += ["axe"]
                   elif "MACE" in u: cats += ["mace"]
@@ -192,7 +189,6 @@ jobs:
                   elif "DAGGER" in u: cats += ["dagger"]
                   elif "QUARTERSTAFF" in u: cats += ["quarterstaff"]
               else:
-                  # Resources / materials (best-effort)
                   if any(x in u for x in ["_ORE","_WOOD","_FIBER","_HIDE","_ROCK","_STONE"]):
                       cats += ["resource","raw"]
                   elif any(x in u for x in ["_BAR","_PLANKS","_CLOTH","_LEATHER","_BLOCK","_STONEBLOCK"]):
@@ -202,7 +198,6 @@ jobs:
                   else:
                       cats += ["other"]
 
-              # Dedup + stable order
               seen = set()
               out = []
               for c in cats:
@@ -215,12 +210,7 @@ jobs:
 
           with open("data/categories.json", "w", encoding="utf-8") as f:
               json.dump(
-                  {
-                      "generatedAt": now,
-                      "source": "derived-from-itemId",
-                      "count": len(mapping),
-                      "items": mapping
-                  },
+                  {"generatedAt": now, "source": "derived-from-itemId", "count": len(mapping), "items": mapping},
                   f,
                   ensure_ascii=False,
                   separators=(",", ":"),
@@ -229,6 +219,7 @@ jobs:
 
           #####################################
           # 5) MANIFEST (single source of truth)
+          # - includes categories_overrides ONLY if the file exists
           #####################################
           python3 - <<'PY'
           import os, json, hashlib, datetime
@@ -249,16 +240,18 @@ jobs:
               "ZH-CN","KO-KR","JA-JP","ZH-TW","ID-ID","TR-TR","AR-SA"
           ]
 
-          manifest = {
-              "generatedAt": now,
-              "version": 1,
-              "files": {
-                  "items": file_entry("data/items.json"),
-                  "markets": file_entry("data/markets.json"),
-                  "categories": file_entry("data/categories.json"),
-                  "i18n": { lang: file_entry(f"data/i18n/{lang}.json") for lang in langs }
-              }
+          files = {
+              "items": file_entry("data/items.json"),
+              "markets": file_entry("data/markets.json"),
+              "categories": file_entry("data/categories.json"),
+              "i18n": { lang: file_entry(f"data/i18n/{lang}.json") for lang in langs }
           }
+
+          overrides_path = "data/categories.overrides.json"
+          if os.path.exists(overrides_path):
+              files["categories_overrides"] = file_entry(overrides_path)
+
+          manifest = {"generatedAt": now, "version": 1, "files": files}
 
           with open("data/manifest.json", "w", encoding="utf-8") as f:
               json.dump(manifest, f, ensure_ascii=False, separators=(",", ":"))
