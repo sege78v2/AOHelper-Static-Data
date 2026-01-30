@@ -15,12 +15,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build items + i18n (master + split) + manifest
+      - name: Build items + i18n split + manifest
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p data data/i18n
+
+          #####################################
+          # 0) CLEAN LEGACY (no manual delete)
+          #####################################
+          rm -f data/items.i18n.json data/items.i18n.meta.json
 
           #####################################
           # 1) ITEM IDS (items.json + meta)
@@ -33,6 +38,7 @@ jobs:
 
           src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.txt"
           path = "data/items.txt.new"
+
           raw = open(path, "rb").read()
           lines = raw.decode("utf-8", errors="replace").splitlines()
 
@@ -45,80 +51,48 @@ jobs:
               if not line:
                   continue
               parts = line.split()
+              # Expected: "1234: T4_BAG ..."
               if len(parts) >= 2 and parts[0].endswith(":") and parts[0][:-1].isdigit():
                   item_ids.append(parts[1])
               else:
                   item_ids.append(parts[0])
 
           with open("data/items.json", "w", encoding="utf-8") as f:
-              json.dump({"generatedAt": now, "source": src_url, "count": len(item_ids), "items": item_ids}, f, ensure_ascii=False)
+              json.dump(
+                  {"generatedAt": now, "source": src_url, "count": len(item_ids), "items": item_ids},
+                  f,
+                  ensure_ascii=False,
+                  separators=(",", ":"),
+              )
 
           with open("data/items.meta.json", "w", encoding="utf-8") as f:
-              json.dump({"generatedAt": now, "source": src_url, "sha256": sha256, "bytes": len(raw)}, f, ensure_ascii=False)
+              json.dump(
+                  {"generatedAt": now, "source": src_url, "sha256": sha256, "bytes": len(raw)},
+                  f,
+                  ensure_ascii=False,
+                  separators=(",", ":"),
+              )
           PY
 
           rm -f data/items.txt.new
 
           #####################################
-          # 2) I18N MASTER (items.i18n.json + meta)
+          # 2) I18N SPLIT (15 languages, NO master files)
           #####################################
           SRC_ITEMS_FULL_JSON="https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.json"
           curl -fsSL "$SRC_ITEMS_FULL_JSON" -o data/items.full.json.new
 
           python3 - <<'PY'
-          import json, hashlib, datetime
+          import json, hashlib, datetime, os
 
           src_url = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.json"
           path = "data/items.full.json.new"
+
           raw = open(path, "rb").read()
           arr = json.loads(raw.decode("utf-8", errors="replace"))
 
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
           upstream_sha256 = hashlib.sha256(raw).hexdigest()
-
-          out = {}
-          for it in arr:
-              uid = it.get("UniqueName")
-              if not uid:
-                  continue
-              names = it.get("LocalizedNames") or {}
-              descs = it.get("LocalizedDescriptions") or {}
-              if names or descs:
-                  out[uid] = {"name": names, "desc": descs}
-
-          master_bytes = json.dumps(
-              {"generatedAt": now, "source": src_url, "count": len(out), "items": out},
-              ensure_ascii=False,
-              separators=(",", ":")
-          ).encode("utf-8")
-
-          open("data/items.i18n.json", "wb").write(master_bytes)
-
-          open("data/items.i18n.meta.json", "w", encoding="utf-8").write(
-              json.dumps(
-                  {
-                      "generatedAt": now,
-                      "source": src_url,
-                      "upstreamSha256": upstream_sha256,
-                      "upstreamBytes": len(raw),
-                      "bytes": len(master_bytes),
-                      "sha256": hashlib.sha256(master_bytes).hexdigest()
-                  },
-                  ensure_ascii=False
-              )
-          )
-          PY
-
-          #####################################
-          # 3) I18N SPLIT (15 languages, no per-lang meta)
-          #####################################
-          python3 - <<'PY'
-          import json, os
-
-          master = json.loads(open("data/items.i18n.json", "rb").read().decode("utf-8", errors="replace"))
-          items = master["items"]
-          generatedAt = master["generatedAt"]
-          source = master["source"]
 
           langs = [
               "EN-US","DE-DE","FR-FR","RU-RU","PL-PL","ES-ES","PT-BR","IT-IT",
@@ -127,31 +101,40 @@ jobs:
 
           os.makedirs("data/i18n", exist_ok=True)
 
+          # Build per-lang files
           for lang in langs:
               out = {}
-              for uid, v in items.items():
-                  name = (v.get("name") or {}).get(lang)
-                  desc = (v.get("desc") or {}).get(lang)
-                  if name is None and desc is None:
+              for it in arr:
+                  uid = it.get("UniqueName")
+                  if not uid:
                       continue
-                  out[uid] = {"name": name, "desc": desc}
+                  names = it.get("LocalizedNames") or {}
+                  descs = it.get("LocalizedDescriptions") or {}
+                  n = names.get(lang)
+                  d = descs.get(lang)
+                  if n is None and d is None:
+                      continue
+                  out[uid] = {"name": n, "desc": d}
 
-              payload = {
-                  "generatedAt": generatedAt,
-                  "source": source,
-                  "lang": lang,
-                  "count": len(out),
-                  "items": out
-              }
-
+              payload = {"generatedAt": now, "source": src_url, "lang": lang, "count": len(out), "items": out}
               b = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-              open(f"data/i18n/{lang}.json", "wb").write(b)
+              with open(f"data/i18n/{lang}.json", "wb") as f:
+                  f.write(b)
+
+          # Optional: write one small upstream meta for i18n source (kept minimal)
+          with open("data/i18n.upstream.meta.json", "w", encoding="utf-8") as f:
+              json.dump(
+                  {"generatedAt": now, "source": src_url, "upstreamSha256": upstream_sha256, "upstreamBytes": len(raw)},
+                  f,
+                  ensure_ascii=False,
+                  separators=(",", ":"),
+              )
           PY
 
           rm -f data/items.full.json.new
 
           #####################################
-          # 4) MANIFEST (single source of truth)
+          # 3) MANIFEST (single source of truth)
           #####################################
           python3 - <<'PY'
           import os, json, hashlib, datetime
@@ -164,11 +147,7 @@ jobs:
               return h.hexdigest()
 
           def file_entry(p: str) -> dict:
-              return {
-                  "url": "/" + p.replace("\\", "/"),
-                  "bytes": os.path.getsize(p),
-                  "sha256": sha256_file(p),
-              }
+              return {"url": "/" + p.replace("\\", "/"), "bytes": os.path.getsize(p), "sha256": sha256_file(p)}
 
           now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -183,13 +162,11 @@ jobs:
               "files": {
                   "items": file_entry("data/items.json"),
                   "items_meta": file_entry("data/items.meta.json"),
-                  "items_i18n_master": file_entry("data/items.i18n.json"),
-                  "items_i18n_master_meta": file_entry("data/items.i18n.meta.json"),
+                  "i18n_upstream_meta": file_entry("data/i18n.upstream.meta.json"),
                   "i18n": { lang: file_entry(f"data/i18n/{lang}.json") for lang in langs }
               }
           }
 
-          os.makedirs("data", exist_ok=True)
           with open("data/manifest.json", "w", encoding="utf-8") as f:
               json.dump(manifest, f, ensure_ascii=False, separators=(",", ":"))
           PY
@@ -206,6 +183,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data
+          git add -A data
           git commit -m "chore: daily data update"
           git push
